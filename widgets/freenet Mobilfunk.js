@@ -3,11 +3,10 @@
 // icon-color: green; icon-glyph: signal;
 ///<reference path='../index.d.ts' />
 
-const debug        = true
-const apiUrl       = 'https://pass.telekom.de/api/service/generic/v1/status'
+const debug        = false
+const appName      = 'freenet Mobilfunk'
 const clientId     = ''
 const clientSecret = ''
-const appName      = 'freenet Mobilfunk'
 
 
 class FreenetWidget {
@@ -19,6 +18,7 @@ class FreenetWidget {
       console.log(`Creating directory: ${this.documentsDirectory}`)
       this.fileManager.createDirectory(this.documentsDirectory)
     }
+    this.shouldAuthenticateWithCredentials = clientId && clientSecret
   }
 
   async createSmallWidget() {
@@ -106,7 +106,7 @@ class FreenetWidget {
       console.log('Using cached session')
       if (Date.now() >= session.expires_at) {
         console.log('Cached session has expired and is being refreshed')
-        session = await this.refreshToken(session.refresh_token)
+        session = await this.refreshSession(session)
         this.storeSession(session, sessionFilePath)
       }
       else {
@@ -114,13 +114,7 @@ class FreenetWidget {
       }
     }
     else {
-      if (config.runsInWidget) {
-        throw 'You have to run this script inside the app first'
-      }
-      console.log('Prompting user for credentials')
-      const credentials = await this.promptForCredentials();
-      console.log('Aquiring access token')
-      session = await this.authenticate(credentials)
+      session = await this.authenticate()
       this.storeSession(session, sessionFilePath)
     }
     
@@ -128,13 +122,37 @@ class FreenetWidget {
     return accessToken
   }
 
+  async authenticate() {
+    let session
+    if (this.shouldAuthenticateWithCredentials) {
+      console.log('Prompting user for credentials')
+      const credentials = await this.promptForCredentials()
+      console.log('Aquiring access token using credentials')
+      session = await this.authenticateWithCredentials(credentials)
+      session.expires_at = new Date(Date.now() + session.expires_in * 1000).toISOString()
+    }
+    else {
+      console.log('Acquiring access token via web view')
+      session = await this.authenticateUsingWebViewCookie()
+    }
+    return session;
+  }
+
+  async refreshSession(session) {
+    const newSession = await (this.shouldAuthenticateWithCredentials ? this.refreshToken(session.refresh_token) : this.authenticateUsingWebViewCookie())
+    return newSession
+  }
+
   async storeSession(session, sessionFilePath) {
-    session.expires_at = Date.now() + session.expires_in * 1000
     await this.replaceJsonFileContents(sessionFilePath, session)
     console.log('Updated session cache')
   }
 
   async promptForCredentials() {
+    if (config.runsInWidget) {
+      throw 'You have to run this script inside the app first'
+    }
+
     const promptCredentails = new Alert()
     promptCredentails.title = 'Credentials'
     promptCredentails.message = 'Please enter your credentials'
@@ -152,7 +170,7 @@ class FreenetWidget {
     return result
   }
 
-  async authenticate(credentials) {
+  async authenticateWithCredentials(credentials) {
     const debugOutputPath = this.fileManager.joinPath(this.documentsDirectory, 'last-auth-response.json')
     const request = new Request('https://api.freenet-mobilfunk.de/v2/oidc/token')
     request.method = 'POST'
@@ -175,6 +193,35 @@ class FreenetWidget {
     } catch (err) {
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody, err)
     }
+  }
+  
+  async authenticateUsingWebViewCookie() {
+    const request = new Request('https://freenet-mobilfunk.de')
+    await request.load()
+    let result = {}
+
+    request.response.cookies.forEach(cookie => {
+      if (cookie.name == 'accessToken') {
+        console.log('Found access token cookie')
+        result.access_token = cookie.value
+        result.expires_at = cookie.expiresDate
+      }
+    })
+
+    if (result.access_token) {
+      return result
+    }
+
+    if (config.runsInWidget) {
+      throw 'You have to run this script inside the app first'
+    }
+    
+    console.log('Did not find access token cookie. Presenting web view.')
+
+    const webview = new WebView()
+    await webview.loadURL('https://identity.freenet-mobilfunk.de')
+    await webview.present(false)
+    return await this.authenticateUsingWebViewCookie()
   }
 
   async refreshToken(refreshToken) {
