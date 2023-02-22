@@ -104,7 +104,7 @@ class FreenetWidget {
     
     if (session) {
       console.log('Using cached session')
-      if (Date.now() >= session.expires_at) {
+      if (new Date() >= new Date(session.expires_at)) {
         console.log('Cached session has expired and is being refreshed')
         session = await this.refreshSession(session)
         this.storeSession(session, sessionFilePath)
@@ -129,7 +129,6 @@ class FreenetWidget {
       const credentials = await this.promptForCredentials()
       console.log('Aquiring access token using credentials')
       session = await this.authenticateWithCredentials(credentials)
-      session.expires_at = new Date(Date.now() + session.expires_in * 1000).toISOString()
     }
     else {
       console.log('Acquiring access token via web view')
@@ -180,7 +179,7 @@ class FreenetWidget {
     request.body = `grant_type=password&username=${encodeURIComponent(credentials.username)}&password=${encodeURIComponent(credentials.password)}&client_id=${clientId}&client_secret=${clientSecret}`
 
     const kind = 'Authentication'
-    let responseBody;
+    let responseBody
     try {
       responseBody = await request.loadJSON()
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody)
@@ -188,40 +187,35 @@ class FreenetWidget {
       if (!responseBody.access_token) {
         throw Error('Authentication failed: Did not receive an access token')
       }
+      
+      let result = responseBody
+      result.expires_at = new Date(Date.now() + responseBody.expires_in * 1000).toISOString()
 
-      return responseBody
+      return result
     } catch (err) {
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody, err)
     }
   }
   
   async authenticateUsingWebViewCookie() {
-    const request = new Request('https://freenet-mobilfunk.de')
-    await request.load()
-    let result = {}
-
-    request.response.cookies.forEach(cookie => {
-      if (cookie.name == 'accessToken') {
-        console.log('Found access token cookie')
-        result.access_token = cookie.value
-        result.expires_at = cookie.expiresDate
-      }
-    })
-
-    if (result.access_token) {
-      return result
-    }
-
     if (config.runsInWidget) {
       throw 'You have to run this script inside the app first'
     }
-    
-    console.log('Did not find access token cookie. Presenting web view.')
 
     const webview = new WebView()
-    await webview.loadURL('https://identity.freenet-mobilfunk.de')
+    await webview.loadURL('https://freenet-mobilfunk.de/online-service')
     await webview.present(false)
-    return await this.authenticateUsingWebViewCookie()
+    let result = await webview.evaluateJavaScript('JSON.parse(sessionStorage.getItem(\'oidcdata\'))')
+
+    if (!result.access_token) {
+      throw Error('Authentication failed: Did not receive an access token')
+    }
+
+    const expirationDate = new Date(0)
+    expirationDate.setUTCSeconds(result.jwt.exp)
+    result.expires_at = expirationDate.toISOString()
+
+    return result;
   }
 
   async refreshToken(refreshToken) {
