@@ -313,7 +313,7 @@ class FreenetWidget {
       console.log(`Removing existing file: ${path}`)
       await this.fileManager.remove(path)
     }
-    await this.fileManager.writeString(path, JSON.stringify(content, null, 2))
+    await this.fileManager.writeString(path, JSON.stringify(content, null, 2).replace(/password=[^&\s"]+/g, 'password=*****'))
   }
 
   createErrorPresentation(errorMessage) {
