@@ -143,6 +143,15 @@ class FreenetWidget {
   }
 
   async storeSession(session, sessionFilePath) {
+    if (session.jwt) {
+      const expirationDate = new Date(0)
+      expirationDate.setUTCSeconds(session.jwt.exp)
+      session.expires_at = expirationDate.toISOString()
+    }
+    else {
+      session.expires_at = new Date(Date.now() + session.expires_in * 1000).toISOString()
+    }
+
     await this.replaceJsonFileContents(sessionFilePath, session)
     console.log('Updated session cache')
   }
@@ -187,11 +196,8 @@ class FreenetWidget {
       if (!responseBody.access_token) {
         throw Error('Authentication failed: Did not receive an access token')
       }
-      
-      let result = responseBody
-      result.expires_at = new Date(Date.now() + responseBody.expires_in * 1000).toISOString()
 
-      return result
+      return responseBody
     } catch (err) {
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody, err)
     }
@@ -210,10 +216,6 @@ class FreenetWidget {
     if (!result.access_token) {
       throw Error('Authentication failed: Did not receive an access token')
     }
-
-    const expirationDate = new Date(0)
-    expirationDate.setUTCSeconds(result.jwt.exp)
-    result.expires_at = expirationDate.toISOString()
 
     return result;
   }
