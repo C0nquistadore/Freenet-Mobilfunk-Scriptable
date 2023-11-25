@@ -10,7 +10,7 @@ const clientSecret = ''
 
 
 class FreenetWidget {
-  
+
   constructor() {
     this.fileManager = FileManager.iCloud()
     this.documentsDirectory = this.fileManager.joinPath(this.fileManager.documentsDirectory(), appName)
@@ -23,7 +23,6 @@ class FreenetWidget {
 
   async createSmallWidget() {
     const list = new ListWidget()
-    list.addSpacer(16)
 
     let data = {}, fresh = 0
     try {
@@ -39,7 +38,7 @@ class FreenetWidget {
     }
 
     const line1 = list.addText(appName)
-    line1.font = Font.mediumSystemFont(12)
+    line1.font = Font.lightSystemFont(14)
 
     const line2 = list.addText(data.usedPercentage + '%')
     line2.font = Font.boldSystemFont(36)
@@ -53,7 +52,7 @@ class FreenetWidget {
     const line3 = list.addText(data.usedVolumeStr + ' / ' + data.initialVolumeStr)
     line3.font = Font.mediumSystemFont(12)
 
-    list.addSpacer(16)
+    list.addSpacer(4)
 
     let line4, line5
     if (data.remainingTimeStr) {
@@ -74,12 +73,13 @@ class FreenetWidget {
         line5.textColor = Color.darkGray()
       }
     }
-    
+
     // Add time of last widget refresh:
-    list.addSpacer(4)
+    list.addSpacer()
+    list.addSpacer()
     const now = new Date();
     const timeLabel = list.addDate(now)
-    timeLabel.font = Font.mediumSystemFont(10)
+    timeLabel.font = Font.lightSystemFont(10)
     timeLabel.centerAlignText()
     timeLabel.applyTimeStyle()
     timeLabel.textColor = Color.gray()
@@ -101,7 +101,7 @@ class FreenetWidget {
     else {
       console.log(`File does not exist: ${sessionFilePath}`)
     }
-    
+
     if (session) {
       console.log('Using cached session')
       if (new Date() >= new Date(session.expires_at)) {
@@ -117,7 +117,7 @@ class FreenetWidget {
       session = await this.authenticate()
       this.storeSession(session, sessionFilePath)
     }
-    
+
     const accessToken = session.access_token
     return accessToken
   }
@@ -202,7 +202,7 @@ class FreenetWidget {
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody, err)
     }
   }
-  
+
   async authenticateUsingWebViewCookie() {
     if (config.runsInWidget) {
       throw 'You have to run this script inside the app first'
