@@ -7,9 +7,14 @@ const debug        = false
 const appName      = 'freenet Mobilfunk'
 const clientId     = ''
 const clientSecret = ''
+const authStrategy = 'code_flow' // password, cookie, code_flow
 
 
 class FreenetWidget {
+
+  authUrl = 'https://id.freenet-mobilfunk.de/authorize'
+  tokenUrl = 'https://id.freenet-mobilfunk.de/oauth/token'
+  redirectUri = 'de.md.meinmd://id.freenet-mobilfunk.de/ios/de.md.meinmd/callback'
 
   constructor() {
     this.fileManager = FileManager.iCloud()
@@ -18,7 +23,6 @@ class FreenetWidget {
       console.log(`Creating directory: ${this.documentsDirectory}`)
       this.fileManager.createDirectory(this.documentsDirectory)
     }
-    this.shouldAuthenticateWithCredentials = clientId && clientSecret
   }
 
   async createSmallWidget() {
@@ -27,7 +31,7 @@ class FreenetWidget {
     let data = {}, fresh = 0
     try {
       const accessToken = await this.getAccessToken()
-      data = await this.collectData(accessToken);
+      data = await this.collectData(accessToken)
       fresh = 1
     } catch (error) {
       if (debug) {
@@ -77,7 +81,7 @@ class FreenetWidget {
     // Add time of last widget refresh:
     list.addSpacer()
     list.addSpacer()
-    const now = new Date();
+    const now = new Date()
     const timeLabel = list.addDate(now)
     timeLabel.font = Font.lightSystemFont(10)
     timeLabel.centerAlignText()
@@ -124,21 +128,35 @@ class FreenetWidget {
 
   async authenticate() {
     let session
-    if (this.shouldAuthenticateWithCredentials) {
-      console.log('Prompting user for credentials')
-      const credentials = await this.promptForCredentials()
-      console.log('Aquiring access token using credentials')
-      session = await this.authenticateWithCredentials(credentials)
+    switch (authStrategy) {
+      case 'password':
+        session = await this.authenticateWithCredentials()
+        break
+      case 'cookie':
+        session = await this.authenticateUsingWebViewCookie()
+        break
+      case 'code_flow':
+        session = await this.authenticateUsingCodeFlow()
+        break
+      default:
+        throw Error(`Unexpected authentication method: ${authStrategy}`)
     }
-    else {
-      console.log('Acquiring access token via web view')
-      session = await this.authenticateUsingWebViewCookie()
-    }
-    return session;
+    return session
   }
 
   async refreshSession(session) {
-    const newSession = await (this.shouldAuthenticateWithCredentials ? this.refreshToken(session.refresh_token) : this.authenticateUsingWebViewCookie())
+    let newSession
+    switch (authStrategy) {
+      case 'password':
+      case 'code_flow':
+        newSession = await this.refreshToken(session.refresh_token)
+        break
+      case 'cookie':
+        newSession = await this.authenticateUsingWebViewCookie()
+        break
+      default:
+        throw Error(`Unexpected authentication method: ${authStrategy}`)
+    }
     return newSession
   }
 
@@ -178,9 +196,15 @@ class FreenetWidget {
     return result
   }
 
+  async authenticateWithCredentials() {
+    console.log('Prompting user for credentials')
+    const credentials = await this.promptForCredentials()
+    console.log('Aquiring access token using credentials')
+    return this.authenticateWithCredentials(credentials)
+  }
   async authenticateWithCredentials(credentials) {
     const debugOutputPath = this.fileManager.joinPath(this.documentsDirectory, 'last-auth-response.json')
-    const request = new Request('https://api.freenet-mobilfunk.de/v2/oidc/token')
+    const request = new Request(this.tokenUrl)
     request.method = 'POST'
     request.headers = {
       'Content-Type': 'application/x-www-form-urlencoded'
@@ -208,6 +232,7 @@ class FreenetWidget {
       throw 'You have to run this script inside the app first'
     }
 
+    console.log('Acquiring access token via web view')
     const webview = new WebView()
     await webview.loadURL('https://freenet-mobilfunk.de/online-service')
     await webview.present(false)
@@ -217,12 +242,78 @@ class FreenetWidget {
       throw Error('Authentication failed: Did not receive an access token')
     }
 
-    return result;
+    return result
+  }
+
+  async authenticateUsingCodeFlow() {
+    const webView = new WebView()
+    let code
+
+    webView.shouldAllowRequest = async (request) => {
+      const url = request.url
+      console.log(`Navigated url: ${url}`)
+
+      if (url.startsWith(this.redirectUri)) {
+        console.log("Url matches redirect uri")
+
+        const params = this.parseQueryString(url)
+
+        if (params.code) {
+          code = params.code
+          console.log(`Extracted authorization code: ${code}`)
+        }
+        else if (params.error) {
+          const error = params.error_description || params.error
+          throw new Error(`Authentication failed: ${error}`)
+        }
+
+        // The redirect uri has a custom URI scheme which causes the web view to hang
+        // Therefore we navigate to a blank page to complete the flow
+        await webView.evaluateJavaScript('window.location = "about:blank"')
+        return false
+      }
+
+      return true
+    }
+
+    const authUrl = `${this.authUrl}?response_type=code&client_id=${clientId}&scope=offline_access&redirect_uri=${encodeURIComponent(this.redirectUri)}`
+
+    console.log(`Navigating url: ${authUrl}`)
+    await webView.loadURL(authUrl)
+
+    if (!code) {
+      throw new Error("Did not receive code during authorization flow")
+    }
+
+    console.log("Successfully obtained authorization code")
+
+    const debugOutputPath = this.fileManager.joinPath(this.documentsDirectory, 'last-code-exchange-token-response.json')
+    const request = new Request(this.tokenUrl)
+    request.method = 'POST'
+    request.headers = {
+      'Content-Type': 'application/x-www-form-urlencoded'
+    }
+    request.body = `grant_type=authorization_code&code=${code}&client_id=${clientId}&redirect_uri=${encodeURIComponent(this.redirectUri)}`
+
+    const kind = 'Exchanging code for token'
+    let responseBody
+    try {
+      responseBody = await request.loadJSON()
+      await this.handleHttpResponse(kind, debugOutputPath, request, responseBody)
+
+      if (!responseBody.access_token) {
+        throw Error(`${kind} failed: Did not receive a new access token`)
+      }
+
+      return responseBody
+    } catch (err) {
+      await this.handleHttpResponse(kind, debugOutputPath, request, responseBody, err)
+    }
   }
 
   async refreshToken(refreshToken) {
     const debugOutputPath = this.fileManager.joinPath(this.documentsDirectory, 'last-refresh-token-response.json')
-    const request = new Request('https://api.freenet-mobilfunk.de/v2/oidc/token')
+    const request = new Request(this.tokenUrl)
     request.method = 'POST'
     request.headers = {
       'Content-Type': 'application/x-www-form-urlencoded'
@@ -230,13 +321,13 @@ class FreenetWidget {
     request.body = `grant_type=refresh_token&refresh_token=${refreshToken}&client_id=${clientId}&client_secret=${clientSecret}`
 
     const kind = 'Refreshing token'
-    let responseBody;
+    let responseBody
     try {
       responseBody = await request.loadJSON()
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody)
 
       if (!responseBody.access_token) {
-        throw Error('Refreshing token failed: Did not receive a new access token')
+        throw Error(`${kind} failed: Did not receive a new access token`)
       }
 
       return responseBody
@@ -261,12 +352,12 @@ class FreenetWidget {
     })
 
     const kind = 'Collecting data'
-    let responseBody;
+    let responseBody
     try {
       responseBody = await request.loadJSON()
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody)
       const result = this.convertDataResponse(responseBody)
-      return result;
+      return result
     } catch (err) {
       await this.handleHttpResponse(kind, debugOutputPath, request, responseBody, err)
     }
@@ -315,6 +406,20 @@ class FreenetWidget {
     await this.fileManager.writeString(path, JSON.stringify(content, null, 2).replace(/password=[^&\s"]+/g, 'password=*****'))
   }
 
+  parseQueryString(url) {
+    const params = {}
+    const queryString = url.split('?')[1] || ''
+
+    queryString.split('&').forEach(pair => {
+      const [key, value] = pair.split('=')
+      if (key) {
+        params[decodeURIComponent(key)] = decodeURIComponent(value || '')
+      }
+    })
+
+    return params
+  }
+
   createErrorPresentation(errorMessage) {
     const errorList = new ListWidget()
     errorList.addText(errorMessage)
@@ -350,7 +455,7 @@ class FreenetWidget {
     if (duration.hours > 0) { return `${duration.hours} hours ${duration.minutes} minutes` }
     if (duration.minutes > 0) { return `${duration.minutes} minutes` }
     if (duration.seconds > 0) { return `${duration.seconds} seconds` }
-    return 'Now';
+    return 'Now'
   }
 }
 
