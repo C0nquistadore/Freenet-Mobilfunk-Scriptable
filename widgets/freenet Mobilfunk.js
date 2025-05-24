@@ -4,6 +4,7 @@
 ///<reference path='../index.d.ts' />
 
 const debug        = false
+const logToFile    = false // Experimental
 const appName      = 'freenet Mobilfunk'
 const clientId     = ''
 const clientSecret = ''
@@ -20,7 +21,7 @@ class FreenetWidget {
     this.fileManager = FileManager.iCloud()
     this.documentsDirectory = this.fileManager.joinPath(this.fileManager.documentsDirectory(), appName)
     if (!this.fileManager.isDirectory(this.documentsDirectory)) {
-      console.log(`Creating directory: ${this.documentsDirectory}`)
+      this.log(`Creating directory: ${this.documentsDirectory}`)
       this.fileManager.createDirectory(this.documentsDirectory)
     }
   }
@@ -96,25 +97,25 @@ class FreenetWidget {
     let session
     if (this.fileManager.fileExists(sessionFilePath)) {
       if (!this.fileManager.isFileDownloaded(sessionFilePath)) {
-        console.log(`Downloading iCloud file: ${sessionFilePath}`)
+        this.log(`Downloading iCloud file: ${sessionFilePath}`)
         await this.fileManager.downloadFileFromiCloud(sessionFilePath)
       }
       const content = await this.fileManager.readString(sessionFilePath)
       session = JSON.parse(content)
     }
     else {
-      console.log(`File does not exist: ${sessionFilePath}`)
+      this.log(`File does not exist: ${sessionFilePath}`)
     }
 
     if (session) {
-      console.log('Using cached session')
+      this.log('Using cached session')
       if (new Date() >= new Date(session.expires_at)) {
-        console.log('Cached session has expired and is being refreshed')
+        this.log('Cached session has expired and is being refreshed')
         session = await this.refreshSession(session)
         this.storeSession(session, sessionFilePath)
       }
       else {
-        console.log('Cached session is still valid')
+        this.log('Cached session is still valid')
       }
     }
     else {
@@ -171,7 +172,7 @@ class FreenetWidget {
     }
 
     await this.replaceJsonFileContents(sessionFilePath, session)
-    console.log('Updated session cache')
+    this.log('Updated session cache')
   }
 
   async promptForCredentials() {
@@ -197,9 +198,9 @@ class FreenetWidget {
   }
 
   async authenticateWithCredentials() {
-    console.log('Prompting user for credentials')
+    this.log('Prompting user for credentials')
     const credentials = await this.promptForCredentials()
-    console.log('Aquiring access token using credentials')
+    this.log('Aquiring access token using credentials')
     return this.authenticateWithCredentials(credentials)
   }
   async authenticateWithCredentials(credentials) {
@@ -232,7 +233,7 @@ class FreenetWidget {
       throw 'You have to run this script inside the app first'
     }
 
-    console.log('Acquiring access token via web view')
+    this.log('Acquiring access token via web view')
     const webview = new WebView()
     await webview.loadURL('https://freenet-mobilfunk.de/online-service')
     await webview.present(false)
@@ -246,30 +247,38 @@ class FreenetWidget {
   }
 
   async authenticateUsingCodeFlow() {
+    const codeParameter = args.queryParameters.code
+    if (codeParameter) {
+      this.log(`Received code parameter: ${codeParameter}`)
+      return await this.completeCodeFlow(codeParameter)
+    }
+
     const webView = new WebView()
     let code
 
     webView.shouldAllowRequest = async (request) => {
       const url = request.url
-      console.log(`Navigated url: ${url}`)
+      this.log(`Navigated url: ${url}`)
 
       if (url.startsWith(this.redirectUri)) {
-        console.log("Url matches redirect uri")
+        this.log("Url matches redirect uri")
 
         const params = this.parseQueryString(url)
 
         if (params.code) {
           code = params.code
-          console.log(`Extracted authorization code: ${code}`)
+          this.log(`Extracted authorization code: ${code}`)
         }
         else if (params.error) {
           const error = params.error_description || params.error
           throw new Error(`Authentication failed: ${error}`)
         }
 
-        // The redirect uri has a custom URI scheme which causes the web view to hang
-        // Therefore we navigate to a blank page to complete the flow
-        await webView.evaluateJavaScript('window.location = "about:blank"')
+        // Since we cannot close the web view automatically, we rerun this script with the code parameter to complete the flow
+        const currentScriptUrl = URLScheme.forRunningScript()
+        const targetScriptUrl = `${currentScriptUrl}${(currentScriptUrl.includes('?') ? '&' : '?')}code=${encodeURIComponent(code)}`
+        this.log(`Navigating to script URL: ${targetScriptUrl}`)
+        Safari.open(targetScriptUrl)
         return false
       }
 
@@ -278,15 +287,15 @@ class FreenetWidget {
 
     const authUrl = `${this.authUrl}?response_type=code&client_id=${clientId}&scope=offline_access&redirect_uri=${encodeURIComponent(this.redirectUri)}`
 
-    console.log(`Navigating url: ${authUrl}`)
+    this.log(`Navigating url: ${authUrl}`)
     await webView.loadURL(authUrl)
+    await webView.present(false)
 
-    if (!code) {
-      throw new Error("Did not receive code during authorization flow")
-    }
+    // At this point the callback handler should have kicked in to rerun this script with the authorization code parameter to complete the flow
+    throw new Error("Code authorization flow did not complete")
+  }
 
-    console.log("Successfully obtained authorization code")
-
+  async completeCodeFlow(code) {
     const debugOutputPath = this.fileManager.joinPath(this.documentsDirectory, 'last-code-exchange-token-response.json')
     const request = new Request(this.tokenUrl)
     request.method = 'POST'
@@ -379,7 +388,7 @@ class FreenetWidget {
   }
 
   async handleHttpResponse(kind, debugOutputPath, request, responseBody, error) {
-    console.log(`${request.method} ${request.url} -> ${request.response.statusCode}`)
+    this.log(`${request.method} ${request.url} -> ${request.response.statusCode}`)
     await this.writeHttpDebugOutput(debugOutputPath, request, responseBody, error)
     if (responseBody?.error_description) {
       throw Error(`${kind} failed: ${responseBody.error_description}`)
@@ -398,12 +407,18 @@ class FreenetWidget {
   }
 
   async replaceJsonFileContents(path, content) {
+    await this.replaceFileContents(path, JSON.stringify(content, null, 2).replace(/password=[^&\s"]+/g, 'password=*****'),)
+  }
+
+  async replaceFileContents(path, content, logFileRemove) {
     // On iOS, files are not overwritten and suffixed with a number each time
     if (this.fileManager.fileExists(path)) {
-      console.log(`Removing existing file: ${path}`)
+      if (logFileRemove) {
+        console.log(`Removing existing file: ${path}`)
+      }
       await this.fileManager.remove(path)
     }
-    await this.fileManager.writeString(path, JSON.stringify(content, null, 2).replace(/password=[^&\s"]+/g, 'password=*****'))
+    await this.fileManager.writeString(path, content)
   }
 
   parseQueryString(url) {
@@ -456,6 +471,23 @@ class FreenetWidget {
     if (duration.minutes > 0) { return `${duration.minutes} minutes` }
     if (duration.seconds > 0) { return `${duration.seconds} seconds` }
     return 'Now'
+  }
+
+  log(message) {
+    console.log(message)
+
+    if (!logToFile) {
+      return
+    }
+    
+    const filePath = this.fileManager.joinPath(this.documentsDirectory, 'output.log')
+    let content
+    if (this.fileManager.fileExists(filePath)) {
+      content = this.fileManager.readString(filePath)
+    }
+    const line = `[${new Date().toISOString()}] ${message}`
+    content = content ? `${content}\n${line}` : line
+    this.fileManager.writeString(filePath, content)
   }
 }
 
