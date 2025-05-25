@@ -6,7 +6,7 @@
 const debug        = false
 const logToFile    = false // Experimental
 const appName      = 'freenet Mobilfunk'
-const clientId     = ''
+const clientId     = 'ZkaMGvS8sxnhr1UlojseN8MxH0ZomnDF'
 const clientSecret = ''
 const authStrategy = 'code_flow' // password, cookie, code_flow
 
